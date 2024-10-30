@@ -1,0 +1,704 @@
+---
+title: "FinalProject"
+author: "Pranit Hande(3971628),Pranav Dev(S3974689),Sajeevan Selvaraj (S3975965)"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#Importing required libraries
+```{r}
+rm(list=ls())  # Careful! This clears all of R's memory!
+library(ggplot2)
+library(ggpubr)
+library(ks)
+library(rjags)
+library(runjags)
+
+```
+
+```{r}
+setwd("C:/Users/prani/Desktop/bayesian/Assignment3")
+source("DBDA2E-utilities.R")  
+
+```
+
+
+#Preliminary functions for posterior inferences
+```{r}
+#===============PRELIMINARY FUNCTIONS FOR POSTERIOR INFERENCES====================
+
+# Summary MCMC ####
+smryMCMC_HD = function(  codaSamples , compVal = NULL,  saveName=NULL) {
+  summaryInfo = NULL
+  mcmcMat = as.matrix(codaSamples, chains=TRUE)
+  paramName = colnames(mcmcMat)
+  for ( pName in paramName ) {
+    if (pName %in% colnames(compVal)){
+      if (!is.na(compVal[pName])) {
+        summaryInfo = rbind( summaryInfo, summarizePost( paramSampleVec = mcmcMat[,pName], compVal = as.numeric(compVal[pName]) ))
+      }
+      else {
+        summaryInfo = rbind( summaryInfo, summarizePost( paramSampleVec = mcmcMat[,pName] ) )
+      }
+    } else {
+      summaryInfo = rbind( summaryInfo, summarizePost( paramSampleVec = mcmcMat[,pName] ) )
+    }
+  }
+  rownames(summaryInfo) = paramName
+  if ( !is.null(saveName) ) {
+    write.csv( summaryInfo , file=paste(saveName,"SummaryInfo.csv",sep="") )
+  }
+  return( summaryInfo )
+}
+#################################################################################
+# Function to plot MCMC #
+
+# Function to plot MCMC
+plotMCMC = function( codaSamples , data , xName="x" , yName="y" ,
+                     showCurve=FALSE ,  pairsPlot=FALSE ,
+                     saveName=NULL , saveType="jpg" ) {
+  #-----------------------------------------------------------------------------
+  y = data[,yName]
+  x = as.matrix(data[,xName])
+  mcmcMat = as.matrix(codaSamples, chains=TRUE)
+  chainLength = NROW( mcmcMat )
+
+  # Using correct parameter names from codaSamples
+  beta0 = mcmcMat[,"beta0"]
+  beta  = mcmcMat[,grep("^beta\\[",colnames(mcmcMat))]
+  if ( ncol(x)==1 ) { beta = matrix( beta , ncol=1 ) }
+
+  tau = mcmcMat[,"tau"] 
+  zVar = mcmcMat[,"zVar"] 
+
+  # Predictions
+  pred1 = mcmcMat[,"pred[1]"]
+  pred2 = mcmcMat[,"pred[2]"]
+  pred3 = mcmcMat[,"pred[3]"]
+  pred4 = mcmcMat[,"pred[4]"]
+  pred5 = mcmcMat[,"pred[5]"]
+
+  #-----------------------------------------------------------------------------
+  # Compute R^2 for credible parameters:
+  YcorX = cor( y , x ) # correlation of y with each x predictor
+  Rsq = beta %*% matrix( YcorX , ncol=1 )
+  Rsq = Rsq[,1]
+  #-----------------------------------------------------------------------------
+  if ( pairsPlot ) {
+    # Plot the parameters pairwise, to see correlations:
+    openGraph()
+    nPtToPlot = 1000
+    plotIdx = floor(seq(1,chainLength, by=chainLength/nPtToPlot))
+    panel.cor = function(x, y, digits=2, prefix="", cex.cor, ...) {
+      usr = par("usr"); on.exit(par(usr))
+      par(usr = c(0, 1, 0, 1))
+      r = (cor(x, y))
+      txt = format(c(r, 0.123456789), digits=digits)[1]
+      txt = paste(prefix, txt, sep="")
+      if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+      text(0.5, 0.5, txt, cex=1.25)
+    }
+    pairs( cbind( beta0, beta, tau )[plotIdx,],
+           labels=c( "beta[0]", paste0("beta[",1:ncol(beta),"]\n",xName), 
+                     expression(tau) ), 
+           lower.panel=panel.cor, 
+           col="skyblue" )
+    if ( !is.null(saveName) ) {
+      saveGraph( file=paste(saveName,"PostPairs",sep=""), type=saveType)
+    }
+  }
+  #-----------------------------------------------------------------------------
+  # Marginal histograms:
+  
+  decideOpenGraph = function( panelCount , saveName , finished=FALSE , 
+                              nRow=2 , nCol=3 ) {
+    if ( finished==TRUE ) {
+      if ( !is.null(saveName) ) {
+        saveGraph( file=paste0(saveName,ceiling((panelCount-1)/(nRow*nCol))), 
+                   type=saveType)
+      }
+      panelCount = 1 
+      return(panelCount)
+    } else {
+      if ( ( panelCount %% (nRow*nCol) ) == 1 ) {
+        if ( panelCount>1 & !is.null(saveName) ) {
+          saveGraph( file=paste0(saveName,(panelCount%/%(nRow*nCol))), 
+                     type=saveType)
+        }
+        openGraph(width=nCol*7.0/3,height=nRow*2.0)
+        layout( matrix( 1:(nRow*nCol) , nrow=nRow, byrow=TRUE ) )
+        par( mar=c(4,4,2.5,0.5) , mgp=c(2.5,0.7,0) )
+      }
+      panelCount = panelCount+1
+      return(panelCount)
+    }
+  }
+
+  # Original scale:
+  panelCount = 1
+  panelCount = decideOpenGraph( panelCount , saveName=paste0(saveName,"PostMarg") )
+  histInfo = plotPost( beta0, cex.lab=1.75, showCurve=showCurve, xlab=bquote(beta[0]), main="Intercept" )
+  for ( bIdx in 1:ncol(beta) ) {
+    panelCount = decideOpenGraph( panelCount , saveName=paste0(saveName,"PostMarg") )
+    histInfo = plotPost( beta[,bIdx], cex.lab=1.75, showCurve=showCurve, xlab=bquote(beta[.(bIdx)]) , main=xName[bIdx] )
+  }
+
+  panelCount = decideOpenGraph( panelCount, finished=TRUE, saveName=paste0(saveName, "PostMarg") )
+  
+  # tau
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName,"PostMarg2") )
+  histInfo = plotPost( tau, cex.lab=1.75, showCurve=showCurve, xlab=bquote(tau), main=paste("Scale") )
+  
+  # R-squared
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName,"PostMarg2") )
+  histInfo = plotPost( Rsq, cex.lab=1.75, showCurve=showCurve, xlab=bquote(R^2), main=paste("Prop Var Accntd") )
+  
+  # Predictions
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName,"PostMargPred") )
+  histInfo = plotPost( pred1, cex.lab=1.75, showCurve=showCurve, xlab="Prediction 1", main="Case 1 predicted \ninsurance charge" )
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName, "PostMargPred") )
+  histInfo = plotPost( pred2, cex.lab=1.75, showCurve=showCurve, xlab="Prediction 2", main="Case 2 predicted \ninsurance charge" )
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName, "PostMargPred") )
+  histInfo = plotPost( pred3, cex.lab=1.75, showCurve=showCurve, xlab="Prediction 3", main="Case 3 predicted \ninsurance charge" )
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName, "PostMargPred") )
+  histInfo = plotPost( pred4, cex.lab=1.75, showCurve=showCurve, xlab="Prediction 4", main="Case 4 predicted \ninsurance charge" )
+  panelCount = decideOpenGraph( panelCount, saveName=paste0(saveName, "PostMargPred") )
+  histInfo = plotPost( pred5, cex.lab=1.75, showCurve=showCurve, xlab="Prediction 5", main="Case 5 predicted \ninsurance charge" )
+
+  panelCount = decideOpenGraph( panelCount, finished=TRUE, saveName=paste0(saveName, "PostMargPred") )
+  
+  # Standardized scale:
+  panelCount = 1
+  panelCount = decideOpenGraph( panelCount , saveName=paste0(saveName,"PostMargZ") )
+  histInfo = plotPost( beta0 , cex.lab = 1.75 , showCurve=showCurve ,
+                       xlab=bquote(beta[.(bIdx)]) , main="Intercept" )
+  for ( bIdx in 1:ncol(beta) ) {
+    panelCount = decideOpenGraph( panelCount , saveName=paste0(saveName,"PostMargZ") )
+    histInfo = plotPost( beta[,bIdx] , cex.lab = 1.75 , showCurve=showCurve ,
+                         xlab=bquote(beta[.(bIdx)]) , main=xName[bIdx] )
+  }
+  
+  panelCount = decideOpenGraph( panelCount, finished=TRUE, saveName=paste0(saveName, "PostMargZ") )
+  
+  # Scale
+  panelCount = decideOpenGraph( panelCount , saveName=paste0(saveName,"PostMargZ2") )
+  histInfo = plotPost( zVar, cex.lab=1.75, showCurve=showCurve, xlab=bquote(tau), main=paste("Scale") )
+  
+  # R-squared
+  panelCount = decideOpenGraph( panelCount , saveName=paste0(saveName,"PostMargZ2") )
+  histInfo = plotPost( Rsq , cex.lab = 1.75 , showCurve=showCurve ,
+                       xlab=bquote(R^2) , main=paste("Prop Var Accntd") )
+  panelCount = decideOpenGraph( panelCount , finished=TRUE , saveName=paste0(saveName,"PostMargZ2") )
+}
+
+```
+
+# Reading the data
+```{r}
+charges <- read.csv("expenses.csv")
+head(charges)
+
+```
+
+
+#Label encoding 
+```{r}
+charges$sex <- ifelse(charges$sex == "male", 1, 0) # Encoding 'sex' column (Male = 1, Female = 0)
+charges$smoker <- ifelse(charges$smoker == "yes", 1, 0) #Encoding 'smoker' column (Yes = 1, No = 0)
+charges$region <- as.numeric(factor(charges$region))#Convert 'region' to factor and then to numeric (northeast = 1 ,northwest = 2, southeast = 3, southwest = 4)
+head(charges, n = 10)
+```
+
+# Summary statistics
+```{r}
+summary(charges)
+```
+
+#Data Visualization
+```{r}
+#Scatter plot of Charges vs Age
+p1 <- ggplot(charges, aes(x = age, y = Y)) +
+  geom_point(color = "#01579B") +
+  labs(title = "Scatterplot of Charges vs Age", x = "Age", y = "Charges")+ 
+  ggtitle("Figure 4.1 Scatter plot of Charges vs Age")
+
+#Scatterplot of Charges vs BMI
+p2 <- ggplot(charges, aes(x = bmi, y = Y)) +
+  geom_point() +
+  labs(title = "Charges vs BMI", x = "BMI", y = "Charges")
+
+# Display plots side by side
+ggarrange(p1 , p2, nrow = 1, ncol = 2)
+```
+
+#Additional plots for data exploration
+```{r}
+#Color palette for the following graph
+color_palette <- c("Female" = "#A6CEE3", "Male" = "#1F78B4", 
+                   "No" = "#A6CEE3", "Yes" = "#1F78B4",
+                   "southwest" = "#B3E5FC", "southeast" = "#4FC3F7", 
+                   "northwest" = "#0288D1", "northeast" = "#01579B")
+
+# Gender Boxplot
+p1 <- ggplot(charges, aes(x = sex, y = Y, fill = sex)) +
+  geom_boxplot(alpha = 0.6, outlier.color = "red", outlier.shape = 1) +
+  xlab("Gender") + ylab("Charges") +
+  scale_fill_manual(values = color_palette[c("Female", "Male")]) +
+  ggtitle("Figure 4.2 Box Plot of Insurance Charges by Gender") +
+  theme_minimal() + theme(legend.position = "none")
+
+# Smoking Status Boxplot with increased y-axis limit
+p2 <- ggplot(charges, aes(x = smoker, y = Y, fill = smoker)) +
+  geom_boxplot(alpha = 0.6, outlier.color = "red") +
+  scale_fill_manual(values = color_palette[c("No", "Yes")]) +
+  labs(x = "Smoker Status", y = "Charges", title = "Figure 4.3 Box Plot of Charges by Smoking Status") +
+  ylim(0, 70000) +  # Adjust the upper limit as needed
+  theme_minimal() + theme(legend.position = "none")
+
+
+# Region Boxplot
+p3 <- ggplot(charges, aes(x = region, y = Y, fill = region)) +
+  geom_boxplot() +
+  scale_fill_manual(values = color_palette[c("southwest", "southeast", "northwest", "northeast")]) +
+  labs(x = "Region", y = "Charges", title = "Figure 4.4 Box Plot of Charges vs Region") +
+  theme_minimal() + theme(legend.position = "none")
+  
+
+# BMI Scatter Plot by Gender
+p4 <- ggplot(charges, aes(x = bmi, y = Y, color = factor(sex, labels = c("Female", "Male")))) +
+  geom_point() + xlab("BMI") + ylab("Charges") +
+  scale_color_manual(values = color_palette[c("Female", "Male")]) +
+  ggtitle("Figure 4.5 Scatter plot of Insurance Charges and \nBMI by Gender") +
+  theme_minimal()
+
+# Children Scatter Plot by Gender
+p5 <- ggplot(charges, aes(x = children, y = Y, color = factor(sex, labels = c("Female", "Male")))) +
+  geom_point() + xlab("No of Children") + ylab("Charges") +
+  scale_color_manual(values = color_palette[c("Female", "Male")]) +
+  ggtitle("Figure 4.6 Scatter plot of Insurance Charges and \nNo of Children by Gender") +
+  theme_minimal()
+
+figure <- ggarrange(p1, p2, p3, p4 , p5, nrow = 3, ncol = 2)
+figure
+
+```
+
+#Histogram of the dependent variable
+```{r}
+hist(charges$Y)
+```
+
+# Kernel density estimation
+```{r}
+plot(kde(charges$Y), xlab = "Charges")
+```
+
+# THE DATA.
+```{r}
+
+y = charges[,"Y"]
+x = as.matrix(charges[,c("age","sex","bmi","children", "smoker", "region")])
+
+```
+
+#Correlation matrix of predictors
+```{r}
+cat("\nCORRELATION MATRIX OF PREDICTORS:\n ")
+show( round(cor(x),3) )
+```
+
+#Prediction Matrix
+```{r}
+xPred = array(NA, dim = c(5,6))
+xPred[1,] = c(35, 0, 28.5, 1, 1, 2)  # age,sex(0 = Female), BMI, children, smoker (1 = Yes), region(2 = northwest)
+xPred[2,] = c(42, 0, 31.2, 3, 0, 4)  # age,sex(0 = Female), BMI, children, smoker (0 = No), region(4 = southwest)
+xPred[3,] = c(27, 0, 22.9, 0, 1, 1)  # age,sex, BMI(0 = Female), children, smoker (1 = Yes), region(1 = northeast)
+xPred[4,] = c(55, 1, 29.7, 2, 0, 3)  # age,sex, BMI(1 = Male), children, smoker (0 = No), region(3 = southeast)
+xPred[5,] = c(30, 1, 24.8, 1, 0, 2)  # age,sex, BMI(1 = Male), children, smoker (0 = No), region(2 = northwest)
+
+```
+
+# Specify the data in a list, for later shipment to JAGS:
+```{r}
+dataList <- list(
+  x = x ,
+  y = y ,
+  xPred = xPred ,
+  Nx = dim(x)[2] ,
+  Ntotal = dim(x)[1]
+)
+```
+
+```{r}
+
+# THE MODEL.
+modelString = "
+  
+  # Standardize the data:
+  
+  data {
+  # create variables using y
+    ysd <- sd(y)
+  #standardizing dependent variable (y)
+  for ( i in 1:Ntotal ) {
+    zy[i] <- y[i] / ysd
+  }
+  # create variables using x
+  for ( j in 1:Nx ) {
+    xsd[j] <- sd(x[,j])
+    #standardizing the independent variables (x)
+    for ( i in 1:Ntotal ) {
+      zx[i,j] <- ( x[i,j] ) / xsd[j] 
+          #we will not perform centering as we're using a gamma likelihood.
+      }
+    }
+  }
+  
+  # Specifying the model using the standardized data:
+  model {
+    for ( i in 1:Ntotal ) {
+      zy[i] ~ dgamma( (mu[i]^2)/zVar, mu[i]/zVar )
+      mu[i] <- zbeta0 + sum( zbeta[1:Nx] * zx[i,1:Nx] )
+    }
+    
+    # Priors on standardized scale (using expert knowledge):
+    zbeta0 ~ dnorm( 0 , 1/2^2 )                                                           
+    zbeta[1] ~ dnorm( (100/10000)/xsd[1] , 1/(1/xsd[1]^2))  # Age: Strong expert knowledge, +100 AUD per year
+    zbeta[2] ~ dnorm( 0                   , 1/(100/xsd[2]^2))  # Sex: No expert knowledge
+    zbeta[3] ~ dnorm( (50/10000)/xsd[3] , 1/(10/xsd[3]^2))   # BMI: Moderate expert knowledge, +50 AUD per BMI unit
+    zbeta[4] ~ dnorm( (1000/10000)/xsd[4]         , 1/(100/xsd[4]^2)) # Children: Weak expert knowledge, +1000 AUD per child
+    zbeta[5] ~ dnorm( (15000/10000)/xsd[5], 1/(0.1/xsd[5]^2))  # Smoker: Very strong expert knowledge, +15,000 AUD for smokers
+    zbeta[6] ~ dnorm( 0                   , 1/(100/xsd[6]^2))  # Region: Weak expert knowledge
+    
+    zVar ~ dgamma( 0.01 , 0.01 )
+
+    # Transform back to original scale:
+    beta[1:Nx] <- ( zbeta[1:Nx] / xsd[1:Nx] )*ysd
+    beta0 <- zbeta0*ysd
+    tau <- zVar * (ysd)^2
+
+    # Calculating predictions at every step of the MCMC
+    for ( i in 1:5){
+      pred[i] <- beta0 + beta[1]*xPred[i,1] + beta[2]*xPred[i,2] + beta[3]*xPred[i,3] 
+      + beta[4]*xPred[i,4] + beta[5]*xPred[i,5] 
+    }
+  }
+  
+  
+  "  # close quote for modelString
+# Write out modelString to a text file
+writeLines( modelString , con="As3.txt" )
+```
+
+#Initializing parameters for JAGS model.
+
+
+#First Implementation
+
+#Initializing parameters for first implementation
+```{r}
+
+parameters <- c("beta0", "beta", "tau", "zVar", "pred")
+adaptSteps = 1500  
+burnInSteps = 300
+nChains = 3 
+thinSteps = 7
+numSavedSteps = 5000
+nIter = ceiling( ( numSavedSteps * thinSteps ) / nChains )
+
+```
+
+#Exceuting the JAGS model for first implementation
+```{r}
+startTime = proc.time()
+# Parallel run
+runJagsOut <- run.jags( method="parallel" ,
+                        model="As3.txt" ,
+                        monitor= c("beta0", "beta", "tau", "zVar", "pred") ,
+                        data=dataList ,
+                        n.chains=nChains ,
+                        adapt=adaptSteps ,
+                        burnin=burnInSteps ,
+                        sample=numSavedSteps ,
+                        thin=thinSteps , summarise=FALSE , plots=FALSE )
+
+stopTime = proc.time()
+elapsedTime = stopTime - startTime
+show(elapsedTime)
+
+```
+
+#CodaSamples for first implementation
+```{r}
+
+codaSamples1 = as.mcmc.list( runJagsOut )
+nrow(codaSamples1[[1]])
+
+```
+
+#Plotting the diagnostic plots for first implementation
+```{r}
+fileNameRoot <- "Run1"
+graphFileType <- "jpeg"
+parameterNames <- varnames(codaSamples1) # get all parameter names
+#
+for ( parName in parameterNames ) {
+  #diagMCMC comes from source("DBDA2E-utilities.R")
+  diagMCMC( codaObject = codaSamples1,
+            parName = parName , 
+            saveName = fileNameRoot, 
+            saveType = graphFileType )
+}
+graphics.off()
+
+```
+
+
+#Second Implementation
+
+#Initializing parameters for Second Implementation
+```{r}
+parameters <- c("beta0", "beta", "tau", "zVar", "pred")
+adaptSteps2 = 1500  # Number  of steps to "tune" the samplers
+burnInSteps2 = 400
+nChains2 = 3 
+thinSteps2 = 11 
+numSavedSteps2 = 8000
+nIter2 = ceiling( ( numSavedSteps2 * thinSteps2 ) / nChains2 )
+
+```
+
+
+#Exceuting the JAGS model for Second Implementation
+```{r}
+
+startTime = proc.time()
+# Parallel run
+runJagsOut2 <- run.jags( method="parallel" ,
+                        model="As3.txt" ,
+                        monitor= c("beta0", "beta", "tau", "zVar", "pred") ,
+                        data=dataList ,
+                        n.chains=nChains2 ,
+                        adapt=adaptSteps2 ,
+                        burnin=burnInSteps2 ,
+                        sample=numSavedSteps2 ,,
+                        thin=thinSteps2 , summarise=FALSE , plots=FALSE )
+
+stopTime = proc.time()
+elapsedTime = stopTime - startTime
+show(elapsedTime)
+
+
+```
+
+#CodaSamples for second implementation
+```{r}
+
+codaSamples2 = as.mcmc.list( runJagsOut2 )
+nrow(codaSamples2[[1]])
+
+```
+
+#Plotting the diagnostic plots for second implementation
+```{r}
+fileNameRoot <- "Run2"
+graphFileType <- "jpeg"
+parameterNames <- varnames(codaSamples2) # get all parameter names
+#
+for ( parName in parameterNames ) {
+  #diagMCMC comes from source("DBDA2E-utilities.R")
+  diagMCMC( codaObject = codaSamples2,
+            parName = parName , 
+            saveName = fileNameRoot, 
+            saveType = graphFileType )
+}
+graphics.off()
+```
+
+
+#Third Implementation
+
+#Initialising the parameters for third Implementation
+```{r}
+
+parameters <- c("beta0", "beta", "tau", "zVar", "pred")
+adaptSteps3 = 1500  # Number  of steps to "tune" the samplers
+burnInSteps3 = 500
+nChains3 = 3 
+thinSteps3 = 16 
+numSavedSteps3 = 9000
+nIter3 = ceiling( ( numSavedSteps3 * thinSteps3 ) / nChains3 )
+
+
+```
+
+#Exceuting the JAGS model for third implementation
+```{r}
+startTime = proc.time()
+# Parallel run
+runJagsOut3 <- run.jags( method="parallel" ,
+                        model="As3.txt" ,
+                        monitor= c("beta0", "beta", "tau", "zVar", "pred") ,
+                        data=dataList ,
+                        n.chains=nChains3 ,
+                        adapt=adaptSteps3 ,
+                        burnin=burnInSteps3 ,
+                        sample=numSavedSteps3 ,,
+                        inits=NULL ,
+                        thin=thinSteps3 , summarise=FALSE , plots=FALSE )
+
+stopTime = proc.time()
+elapsedTime = stopTime - startTime
+show(elapsedTime)
+```
+
+#CodaSamples for third implementation
+```{r}
+
+codaSamples3 = as.mcmc.list( runJagsOut3 )
+nrow(codaSamples3[[1]])
+
+```
+
+#Plotting the diagnostic plots for third implementation
+```{r}
+fileNameRoot <- "Run3"
+graphFileType <- "jpeg"
+parameterNames <- varnames(codaSamples3) # get all parameter names
+#
+for ( parName in parameterNames ) {
+  #diagMCMC comes from source("DBDA2E-utilities.R")
+  diagMCMC( codaObject = codaSamples3,
+            parName = parName , 
+            saveName = fileNameRoot, 
+            saveType = graphFileType )
+}
+graphics.off()
+```
+
+
+#Fourth(FINAL) Implementation
+
+#Initialising the parameters for fourth implementation
+```{r}
+
+parameters <- c("beta0", "beta", "tau", "zVar", "pred")
+adaptSteps4 = 1500  # Number  of steps to "tune" the samplers
+burnInSteps4 = 500
+nChains4 = 3 
+thinSteps4 = 21 
+numSavedSteps4 = 10000
+nIter4 = ceiling( ( numSavedSteps4 * thinSteps4 ) / nChains4 )
+
+
+```
+
+#Exceuting the JAGS model for fourth implementation
+```{r}
+startTime = proc.time()
+# Parallel run
+runJagsOut4 <- run.jags( method="parallel" ,
+                        model="As3.txt" ,
+                        monitor= c("beta0", "beta", "tau", "zVar", "pred") ,
+                        data=dataList ,
+                        n.chains=nChains4 ,
+                        adapt=adaptSteps4 ,
+                        burnin=burnInSteps4 ,
+                        sample=numSavedSteps4 ,,
+                        inits=NULL ,
+                        thin=thinSteps4 , summarise=FALSE , plots=FALSE )
+
+stopTime = proc.time()
+elapsedTime = stopTime - startTime
+show(elapsedTime)
+```
+
+#CodaSamples for fourth implementation
+```{r}
+
+codaSamples4 = as.mcmc.list( runJagsOut4 )
+nrow(codaSamples4[[1]])
+
+```
+
+#Plotting the diagnostic plots for fourth implementation
+```{r}
+fileNameRoot <- "Run4"
+graphFileType <- "jpeg"
+parameterNames <- varnames(codaSamples4) # get all parameter names
+#
+for ( parName in parameterNames ) {
+  #diagMCMC comes from source("DBDA2E-utilities.R")
+  diagMCMC( codaObject = codaSamples4,
+            parName = parName , 
+            saveName = fileNameRoot, 
+            saveType = graphFileType )
+}
+graphics.off()
+```
+
+# Posterior distribution
+```{r}
+compVal <- data.frame("beta0" = NA, 
+                      "beta[1]" = NA, #comparison value for Age
+                      "beta[2]" = NA, #comparison value for Sex
+                      "beta[3]" = NA, #comparison value for BMI
+                      "beta[4]" = NA, #comparison value for Children
+                      "beta[5]" = NA, #comparison value for Smoking habits
+                      "beta[6]" = NA, #comparison value for Region of residence
+                      "tau" = NA , 
+                      check.names = FALSE)
+
+summaryInfo <- smryMCMC_HD( codaSamples = codaSamples4, 
+                            compVal = compVal )
+print(summaryInfo)
+
+graphics.off()
+```
+
+
+```{r}
+plotMCMC(codaSamples = codaSamples4, 
+         data=charges , 
+         xName=c("age","sex","bmi","children", "smoker", "region") , 
+         yName="Y" , 
+         pairsPlot=TRUE , 
+         showCurve=FALSE , 
+          )
+
+```
+
+
+#Mode and Variance of model parameters
+```{r}
+# model coefficients
+coefficients <- summaryInfo[2:8,3] #mode of each parameter
+coefficients
+Variance <- summaryInfo[9,3] #variance
+Variance
+# Since we imposed the regression model on the mean of the gamma likelihood,
+# we use the model (X*beta) to generate the mean of gamma population for each 
+# observed x vector. 
+```
+
+
+#Posterior Predictive Check
+```{r}
+
+meanGamma <- as.matrix(cbind(rep(1,nrow(x)),  x)) %*% as.vector(coefficients)
+# Generate random data from the posterior distribution. Take the 
+# reparameterisation back to alpha and beta.
+randomData <- rgamma(n= 231, 
+                     shape=meanGamma^2/Variance, 
+                     rate=meanGamma/Variance)
+# Display the density plot of observed data and posterior distribution:
+predicted <- data.frame(InsChg = randomData)
+observed <- data.frame(InsChg = y)
+predicted$type <- "Predicted"
+observed$type <- "Observed"
+dataPred <- rbind(predicted, observed)
+
+ggplot(dataPred, aes(InsChg, fill = type)) + geom_density(alpha = 0.2) + xlab("Insurance Charges")
+
+```
+
