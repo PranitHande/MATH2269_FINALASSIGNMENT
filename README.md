@@ -1,4 +1,4 @@
-Please refer MATH2269_FINAL.Rmd for the code.
+Please refer **MATH2269_FINAL.Rmd** for the code.
 
 
-As.txt contains the model string for the JAGS model.
+**As.txt** contains the model string for the JAGS model.
